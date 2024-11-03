@@ -153,19 +153,18 @@ class Metacom extends EventEmitter {
     const introspection = await introspect(units);
     const available = Object.keys(introspection);
     for (const unitName of units) {
-      const [name, ver] = unitName.split('.')
-      if (!available.includes(name)) continue; 
+      const [name, ver] = unitName.split('.');
+      if (!available.includes(name)) continue;
       const methods = new MetacomUnit();
-      const instance = introspection[name]; 
-      const request = this.scaffold(name, ver); 
+      const instance = introspection[name];
+      const request = this.scaffold(name, ver);
       const methodNames = Object.keys(instance);
       for (const methodName of methodNames) {
         methods[methodName] = request(methodName);
       }
-      this.api[name] = methods; 
+      this.api[name] = methods;
     }
   }
-
 
   scaffold(unit) {
     return (method) =>
