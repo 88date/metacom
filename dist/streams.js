@@ -1,4 +1,4 @@
-import { EventEmitter } from 'metautil';
+import { Emitter as EventEmitter } from 'metautil';
 
 const ID_LENGTH = 4;
 
