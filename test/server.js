@@ -29,6 +29,13 @@ class ProcedureMock {
 }
 
 test('Server / calls', async (t) => {
+  const sessionToken = 'valid-session-token';
+  const session = {
+    userId: 'user-1',
+    role: 'USER',
+    language: 'ru',
+    appVersion: '1.0.0',
+  };
   const api = {
     test: {
       hello: {
@@ -45,15 +52,34 @@ test('Server / calls', async (t) => {
     host: 'localhost',
     port: 8003,
     protocol: 'http',
+    secret: 'centrifugo-secret',
     timeouts: { bind: 100 },
     queue: { concurrency: 100, size: 100, timeout: 5_000 },
   };
   const application = {
     console: { log: noop, info: noop, warn: noop, error: noop, debug: noop },
     static: { constructor: { name: 'Static' } },
-    auth: { saveSession: async () => {} },
+    auth: {
+      saveSession: async () => {},
+      readSession: async (token) =>
+        token === sessionToken ? { ...session } : null,
+    },
     getMethod: (unit, _version, method) => new ProcedureMock(api[unit][method]),
     getHook: noop,
+  };
+  const connectCentrifugo = async (data) => {
+    const response = await fetch(
+      `http://${options.host}:${options.port}/api/centrifugo/connect`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Secret: options.secret,
+        },
+        body: JSON.stringify({ data }),
+      },
+    );
+    return response.json();
   };
 
   let server;
@@ -94,5 +120,51 @@ test('Server / calls', async (t) => {
     assert.strictEqual(response.id, id);
     assert.strictEqual(response.type, 'callback');
     assert.strictEqual(response.result, `Hello, ${args.name}`);
+  });
+
+  await t.test('rejects unknown Centrifugo sessions', async () => {
+    const response = await connectCentrifugo({
+      token: 'unknown-session-token',
+      userId: 'attacker',
+      role: 'ADMIN',
+    });
+
+    assert.deepStrictEqual(response, {
+      disconnect: { code: 4501, reason: 'unauthorized' },
+    });
+  });
+
+  await t.test('accepts only allowed Centrifugo session state', async () => {
+    const response = await connectCentrifugo({
+      token: sessionToken,
+      userId: 'attacker',
+      role: 'ADMIN',
+      language: 'en',
+      appVersion: '1.2.3',
+      permissions: ['admin'],
+    });
+
+    assert.deepStrictEqual(response, {
+      result: {
+        user: session.userId,
+        meta: {
+          ...session,
+          token: sessionToken,
+          language: 'en',
+          appVersion: '1.2.3',
+        },
+      },
+    });
+  });
+
+  await t.test('keeps missing Centrifugo session state', async () => {
+    const response = await connectCentrifugo({ token: sessionToken });
+
+    assert.deepStrictEqual(response, {
+      result: {
+        user: session.userId,
+        meta: { ...session, token: sessionToken },
+      },
+    });
   });
 });
