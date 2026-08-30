@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { ClientRequest, ServerResponse } from 'node:http';
+import { ClientRequest, IncomingMessage, ServerResponse } from 'node:http';
 import { Writable } from 'node:stream';
 import WebSocket from 'ws';
 import { Semaphore } from 'metautil';
@@ -132,6 +132,11 @@ export interface StreamPacket {
   size: number;
 }
 
+export interface RawRouter {
+  exports: { raw?: boolean };
+  method?: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
+}
+
 export class Server {
   application: object;
   options: Options;
@@ -142,6 +147,12 @@ export class Server {
   wsServer: any;
   clients: Set<Client>;
   constructor(options: Options, application: object);
+  getRawRouter(url: string): RawRouter | null;
+  raw(
+    proc: RawRouter,
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void>;
   init(): void;
   listen(): Promise<void>;
   message(client: Client, data: string): void;

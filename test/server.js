@@ -14,9 +14,11 @@ process.emitWarning = (warning, type, ...args) => {
 };
 
 class ProcedureMock {
-  constructor({ access, ...options }) {
+  constructor({ access, raw = false, ...options }) {
     this.options = options;
     this.access = access;
+    this.exports = { raw };
+    this.method = options.handler;
   }
 
   // eslint-disable-next-line class-methods-use-this
@@ -47,6 +49,27 @@ test('Server / calls', async (t) => {
       },
     },
   };
+  let hookCalls = 0;
+  let rawBody = null;
+  const rawRouter = new ProcedureMock({
+    raw: true,
+    handler: async (req, res) => {
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204, { 'Tus-Version': '1.0.0' });
+        res.end();
+        return;
+      }
+
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      rawBody = Buffer.concat(chunks).toString();
+      res.writeHead(204, {
+        'Tus-Resumable': '1.0.0',
+        'Upload-Offset': Buffer.byteLength(rawBody),
+      });
+      res.end();
+    },
+  });
   const noop = () => {};
   const options = {
     host: 'localhost',
@@ -65,7 +88,10 @@ test('Server / calls', async (t) => {
         token === sessionToken ? { ...session } : null,
     },
     getMethod: (unit, _version, method) => new ProcedureMock(api[unit][method]),
-    getHook: noop,
+    getHook: (unit) => {
+      hookCalls++;
+      return unit === 'files' ? { router: rawRouter } : null;
+    },
   };
   const connectCentrifugo = async (data) => {
     const response = await fetch(
@@ -94,6 +120,7 @@ test('Server / calls', async (t) => {
   });
 
   await t.test('handles HTTP RPC', async () => {
+    const initialHookCalls = hookCalls;
     const id = 1;
     const args = { name: 'Max' };
     const packet = { type: 'call', id, method: 'test/hello', args };
@@ -106,6 +133,54 @@ test('Server / calls', async (t) => {
     assert.strictEqual(response.id, id);
     assert.strictEqual(response.type, 'callback');
     assert.strictEqual(response.result, `Hello, ${args.name}`);
+    assert.strictEqual(hookCalls, initialHookCalls);
+  });
+
+  await t.test(
+    'keeps default OPTIONS handling for regular routes',
+    async () => {
+      const response = await fetch(
+        `http://${options.host}:${options.port}/api/example`,
+        { method: 'OPTIONS' },
+      );
+
+      assert.strictEqual(response.status, 200);
+      assert.strictEqual(response.headers.get('tus-version'), null);
+      assert.strictEqual(
+        response.headers.get('access-control-allow-methods'),
+        'POST, GET, OPTIONS',
+      );
+    },
+  );
+
+  await t.test('forwards OPTIONS to raw routers', async () => {
+    const response = await fetch(
+      `http://${options.host}:${options.port}/api/files`,
+      { method: 'OPTIONS' },
+    );
+
+    assert.strictEqual(response.status, 204);
+    assert.strictEqual(response.headers.get('tus-version'), '1.0.0');
+  });
+
+  await t.test('forwards the unread body stream to raw routers', async () => {
+    const body = 'raw upload payload';
+    const response = await fetch(
+      `http://${options.host}:${options.port}/api/files/upload-id`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/offset+octet-stream' },
+        body,
+      },
+    );
+
+    assert.strictEqual(response.status, 204);
+    assert.strictEqual(response.headers.get('tus-resumable'), '1.0.0');
+    assert.strictEqual(
+      response.headers.get('upload-offset'),
+      Buffer.byteLength(body).toString(),
+    );
+    assert.strictEqual(rawBody, body);
   });
 
   await t.test('WS RPC handles', async () => {
