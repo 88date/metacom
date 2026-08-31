@@ -92,6 +92,7 @@ export interface Auth {
 
 export class Client extends EventEmitter {
   ip: string | undefined;
+  transport: 'http' | 'ws';
   session: Session;
 }
 
@@ -100,6 +101,7 @@ export class Transport {
   req: ClientRequest;
   res?: ServerResponse;
   connection?: WebSocket;
+  name: 'http' | 'ws';
   ip: string;
   constructor(
     console: Console,

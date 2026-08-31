@@ -42,10 +42,16 @@ test('Server / calls', async (t) => {
     test: {
       hello: {
         access: 'public',
+        transports: ['http', 'ws'],
         handler: async ({ name }) => {
           await timers.setTimeout(10);
           return `Hello, ${name}`;
         },
+      },
+      centrifugoOnly: {
+        access: 'public',
+        transports: ['centrifugo'],
+        handler: async ({ name }) => `Hello from Centrifugo, ${name}`,
       },
     },
   };
@@ -87,7 +93,12 @@ test('Server / calls', async (t) => {
       readSession: async (token) =>
         token === sessionToken ? { ...session } : null,
     },
-    getMethod: (unit, _version, method) => new ProcedureMock(api[unit][method]),
+    getMethod: (unit, _version, method, transport) => {
+      const definition = api[unit]?.[method];
+      if (!definition) return null;
+      if (!definition.transports.includes(transport)) return null;
+      return new ProcedureMock(definition);
+    },
     getHook: (unit) => {
       hookCalls++;
       return unit === 'files' ? { router: rawRouter } : null;
@@ -103,6 +114,20 @@ test('Server / calls', async (t) => {
           Secret: options.secret,
         },
         body: JSON.stringify({ data }),
+      },
+    );
+    return response.json();
+  };
+  const callCentrifugo = async (method, data) => {
+    const response = await fetch(
+      `http://${options.host}:${options.port}/api/centrifugo/rpc`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Secret: options.secret,
+        },
+        body: JSON.stringify({ method, data }),
       },
     );
     return response.json();
@@ -134,6 +159,24 @@ test('Server / calls', async (t) => {
     assert.strictEqual(response.type, 'callback');
     assert.strictEqual(response.result, `Hello, ${args.name}`);
     assert.strictEqual(hookCalls, initialHookCalls);
+  });
+
+  await t.test('rejects Centrifugo-only methods over HTTP', async () => {
+    const packet = {
+      type: 'call',
+      id: 1,
+      method: 'test/centrifugoOnly',
+      args: { name: 'Max' },
+    };
+    const response = await fetch(`http://${options.host}:${options.port}/api`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(packet),
+    });
+    const result = await response.json();
+
+    assert.strictEqual(response.status, 404);
+    assert.strictEqual(result.error.code, 404);
   });
 
   await t.test(
@@ -195,6 +238,35 @@ test('Server / calls', async (t) => {
     assert.strictEqual(response.id, id);
     assert.strictEqual(response.type, 'callback');
     assert.strictEqual(response.result, `Hello, ${args.name}`);
+  });
+
+  await t.test('rejects Centrifugo-only methods over WS', async () => {
+    const packet = {
+      type: 'call',
+      id: 1,
+      method: 'test/centrifugoOnly',
+      args: { name: 'Max' },
+    };
+    const socket = new WebSocket(`ws://${options.host}:${options.port}`);
+    await new Promise((resolve) => socket.on('open', resolve));
+    socket.send(JSON.stringify(packet));
+    const data = await new Promise((resolve) => socket.on('message', resolve));
+    const response = JSON.parse(data);
+    socket.close();
+
+    assert.strictEqual(response.error.code, 404);
+  });
+
+  await t.test('allows Centrifugo-only methods over Centrifugo', async () => {
+    const response = await callCentrifugo('test/centrifugoOnly', {
+      name: 'Max',
+    });
+
+    assert.deepStrictEqual(response, {
+      result: {
+        data: { ok: true, result: 'Hello from Centrifugo, Max' },
+      },
+    });
   });
 
   await t.test('rejects unknown Centrifugo sessions', async () => {
