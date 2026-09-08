@@ -94,6 +94,7 @@ export class Client extends EventEmitter {
   ip: string | undefined;
   transport: 'http' | 'ws';
   session: Session;
+  close(): void;
 }
 
 export class Transport {

@@ -25,8 +25,8 @@ class ProcedureMock {
   async enter() {}
   // eslint-disable-next-line class-methods-use-this
   leave() {}
-  invoke(_context, args) {
-    return this.options.handler(args);
+  invoke(context, args) {
+    return this.options.handler(args, context);
   }
 }
 
@@ -38,8 +38,18 @@ test('Server / calls', async (t) => {
     language: 'ru',
     appVersion: '1.0.0',
   };
+  const closeClient = {
+    access: 'public',
+    transports: ['centrifugo'],
+    handler: async (_args, { client }) => {
+      client.close();
+      client.close();
+      return 'ignored after close';
+    },
+  };
   const api = {
     test: {
+      close: closeClient,
       hello: {
         access: 'public',
         transports: ['http', 'ws'],
@@ -53,6 +63,10 @@ test('Server / calls', async (t) => {
         transports: ['centrifugo'],
         handler: async ({ name }) => `Hello from Centrifugo, ${name}`,
       },
+    },
+    channel: {
+      subscribe: closeClient,
+      publish: closeClient,
     },
   };
   let hookCalls = 0;
@@ -81,7 +95,7 @@ test('Server / calls', async (t) => {
     host: 'localhost',
     port: 8003,
     protocol: 'http',
-    secret: 'centrifugo-secret',
+    centrifugo: { secret: 'centrifugo-secret' },
     timeouts: { bind: 100 },
     queue: { concurrency: 100, size: 100, timeout: 5_000 },
   };
@@ -111,7 +125,7 @@ test('Server / calls', async (t) => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Secret: options.secret,
+          Secret: options.centrifugo.secret,
         },
         body: JSON.stringify({ data }),
       },
@@ -125,7 +139,7 @@ test('Server / calls', async (t) => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Secret: options.secret,
+          Secret: options.centrifugo.secret,
         },
         body: JSON.stringify({ method, data }),
       },
@@ -280,6 +294,31 @@ test('Server / calls', async (t) => {
       disconnect: { code: 4501, reason: 'unauthorized' },
     });
   });
+
+  for (const route of ['rpc', 'subscribe', 'publish']) {
+    await t.test(`disconnects Centrifugo clients during ${route}`, async () => {
+      const response = await fetch(
+        `http://${options.host}:${options.port}/api/centrifugo/${route}`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Secret: options.centrifugo.secret,
+          },
+          body: JSON.stringify({ method: 'test/close', channel: 'test' }),
+        },
+      );
+
+      assert.strictEqual(response.status, 200);
+      assert.strictEqual(
+        response.headers.get('content-type'),
+        'application/json',
+      );
+      assert.deepStrictEqual(await response.json(), {
+        disconnect: { code: 4500, reason: 'closed' },
+      });
+    });
+  }
 
   await t.test('accepts only allowed Centrifugo session state', async () => {
     const response = await connectCentrifugo({
